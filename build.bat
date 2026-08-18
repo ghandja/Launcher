@@ -17,7 +17,7 @@ if not exist "pyside6_gaming_launcher.py" (
     exit /b 1
 )
 
-if not exist "tibialauncher.spec" (
+if not exist "tibialauncher_onefile.spec" (
     echo ERROR: PyInstaller spec file not found
     pause
     exit /b 1
@@ -62,7 +62,7 @@ if exist "build" rmdir /s /q "build"
 echo.
 echo Building launcher executable...
 echo This may take a few minutes...
-pyinstaller tibialauncher.spec --noconfirm
+pyinstaller tibialauncher_onefile.spec --noconfirm
 
 if %errorlevel% neq 0 (
     echo.

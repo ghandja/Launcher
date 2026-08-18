@@ -30,10 +30,10 @@ from PySide6.QtGui import QPixmap, QFont, QPalette, QColor, QIcon, QBrush, QPain
 
 try:
     # Prefer packaged path
-    from tibialauncher.core.launcher_core import LauncherCore
+    from tibialauncher.core.launcher_core import LauncherCore, ClientAlreadyRunningError
 except Exception:
     # Fallback for dev if package path not available
-    from launcher_core import LauncherCore
+    from launcher_core import LauncherCore, ClientAlreadyRunningError
 
 
 def resource_path(*parts: str) -> str:
@@ -65,6 +65,24 @@ class CenteredComboBox(QComboBox):
         super().addItems(items)
         for i in range(self.count()):
             self.setItemData(i, Qt.AlignCenter, Qt.TextAlignmentRole)
+
+    def paintEvent(self, event):
+        """Draw the displayed text centered (non-editable combos ignore TextAlignmentRole)."""
+        from PySide6.QtWidgets import QStylePainter, QStyle, QStyleOptionComboBox
+        painter = QStylePainter(self)
+        opt = QStyleOptionComboBox()
+        self.initStyleOption(opt)
+        painter.drawComplexControl(QStyle.CC_ComboBox, opt)
+        text = opt.currentText
+        if text:
+            text_rect = self.rect()
+            arrow_rect = self.style().subControlRect(
+                QStyle.CC_ComboBox, opt, QStyle.SC_ComboBoxArrow, self)
+            if arrow_rect.isValid():
+                text_rect.setRight(arrow_rect.left() - 4)
+            text_rect.translate(15, 0)
+            painter.drawItemText(
+                text_rect, Qt.AlignCenter, opt.palette, self.isEnabled(), text, QPalette.ButtonText)
 
 
 class DragContainer(QWidget):
@@ -223,18 +241,6 @@ class TitleBar(QFrame):
         h.setContentsMargins(12, 4, 8, 4)
         h.setSpacing(8)
 
-        # Icon + title
-        self.icon_label = QLabel()
-        self.icon_label.setFixedSize(22, 22)
-        icon_path = resource_path('images', 'logo-universal.png')
-        if os.path.exists(icon_path):
-            self.icon_label.setPixmap(QPixmap(icon_path).scaled(22, 22, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        h.addWidget(self.icon_label)
-
-        self.title_label = QLabel("Tibia Launcher")
-        self.title_label.setObjectName("window_title")
-        h.addWidget(self.title_label)
-
         h.addStretch(1)
 
         # Window buttons (minimize, close)
@@ -366,11 +372,12 @@ class DownloadThread(QThread):
 class PySide6GamingLauncher(QMainWindow):
     # Signal for update notification
     update_available_signal = Signal(str, str)  # current_version, latest_version
+    server_name_signal = Signal(str)  # server display name
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Tibia Launcher")
-        self.setFixedSize(700, 600)
+        self.setWindowTitle("Chapadonia Launcher")
+        self.setFixedSize(700, 820)
         # Frameless window
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         # Rounded corners / translucent background
@@ -406,6 +413,7 @@ class PySide6GamingLauncher(QMainWindow):
                 self.log_message(f"⚠️ Failed to set default install directory: {e}")
         # Connect update signal
         self.update_available_signal.connect(self.show_update_prompt)
+        self.server_name_signal.connect(self.apply_server_name)
         
         # Initialize with automatic update check (after potential directory change)
         QTimer.singleShot(2000, lambda: self.check_for_updates(silent=False))  # Check after 2 seconds
@@ -431,15 +439,15 @@ class PySide6GamingLauncher(QMainWindow):
         central_widget.setAutoFillBackground(True)
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(24, 24, 24, 24)
-        main_layout.setSpacing(18)
+        main_layout.setContentsMargins(24, 6, 24, 24)
+        main_layout.setSpacing(14)
         # Custom Title Bar (frameless controls)
         self.title_bar = TitleBar(self)
         main_layout.addWidget(self.title_bar)
         # Title/logo row with image logo
         self.logo_label = QLabel()
         self.logo_label.setAlignment(Qt.AlignHCenter)
-        self.logo_label.setMinimumHeight(90)
+        self.logo_label.setFixedHeight(360)
         main_layout.addWidget(self.logo_label)
 
         # Card (central panel)
@@ -447,7 +455,7 @@ class PySide6GamingLauncher(QMainWindow):
         card.setGraphicsEffect(shadow(48, (0,0,0,190), (0,18)))
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(28, 28, 28, 28)
-        card_layout.setSpacing(18)
+        card_layout.setSpacing(22)
 
         # Large progress bar area (replaces previous banner)
         self.progress_bar = QProgressBar(objectName="progress_bar")
@@ -458,28 +466,24 @@ class PySide6GamingLauncher(QMainWindow):
 
         # Config + Minimap row
         top_controls = QHBoxLayout()
-        top_controls.setSpacing(20)
-        self.config_btn = QPushButton("⚙️ Config", objectName="config_btn")
-        self.config_btn.clicked.connect(self.open_config_dialog)
-        top_controls.addWidget(self.config_btn)
-        # Increase left stretch so combo shifts right
+        top_controls.setSpacing(12)
+        # Equal stretches to center combo + button under logo
         top_controls.addStretch(3)
         self.minimap_combo = CenteredComboBox(objectName="minimap_combo")
         # Populate choices
         self.minimap_combo.addItems([
-            "Select Minimap...",  # index 0 sentinel
-            "With Markers",
-            "Without Markers",
-            "With Grid & POI"
+            "Selecione o minimap...",  # index 0 sentinel
+            "Com marcadores",
+            "Sem marcadores",
+            "Com grade e pontos de interesse"
         ])
         self.minimap_combo.currentIndexChanged.connect(self.on_minimap_index_changed)
         top_controls.addWidget(self.minimap_combo, 0, Qt.AlignCenter)
-        # Slightly smaller right stretch for asymmetry centering under logo
-        top_controls.addStretch(2)
-        self.download_minimap_btn = QPushButton("Download Minimap", objectName="download_minimap_btn")
+        self.download_minimap_btn = QPushButton("Baixar Minimap", objectName="download_minimap_btn")
         self.download_minimap_btn.setEnabled(False)
         self.download_minimap_btn.clicked.connect(self.download_selected_minimap)
         top_controls.addWidget(self.download_minimap_btn)
+        top_controls.addStretch(3)
         card_layout.addLayout(top_controls)
 
         # Main action row: PLAY button
@@ -488,7 +492,7 @@ class PySide6GamingLauncher(QMainWindow):
         action_row.setContentsMargins(0, 10, 0, 0)
 
         # Play button (centered - automatic updates handle everything else)
-        self.play_btn = QPushButton("PLAY", objectName="play_btn")
+        self.play_btn = QPushButton("JOGAR", objectName="play_btn")
         # Static soft shadow for play button (no animation)
         self.play_glow = shadow(26, (0, 200, 255, 160), (0, 10))
         self.play_btn.setGraphicsEffect(self.play_glow)
@@ -500,13 +504,13 @@ class PySide6GamingLauncher(QMainWindow):
         card_layout.addLayout(action_row)
 
         # Status below buttons
-        self.status_label = QLabel("🟢 Ready", objectName="status")
+        self.status_label = QLabel("🟢 Pronto", objectName="status")
         self.status_label.setAlignment(Qt.AlignCenter)
         card_layout.addWidget(self.status_label)
 
         # Log section (full width, bottom)
         self.log_text = QTextEdit(objectName="log_text")
-        self.log_text.setMaximumHeight(100)
+        self.log_text.setMaximumHeight(70)
         self.log_text.setReadOnly(True)
         card_layout.addWidget(self.log_text)
 
@@ -523,9 +527,9 @@ class PySide6GamingLauncher(QMainWindow):
         main_layout.addLayout(status_bar)
 
         # Initialize log
-        self.log_message("🎮 Welcome to Tibia Launcher!")
-        self.log_message("✨ Modern Qt interface loaded successfully")
-        self.log_message("🔄 Automatic update checking will start in 2 seconds...")
+        self.log_message("🎮 Bem-vindo ao launcher Chapadonia!")
+        self.log_message("✨ Interface moderna carregada com sucesso")
+        self.log_message("🔄 A checagem de atualizações começará em 2 segundos...")
     
     def apply_styles(self):
         """Apply a high-tech Qt Style Sheet for a modern neon look.
@@ -547,14 +551,8 @@ QWidget#window_root {
     border-radius: 16px;
 }
 QFrame#title_bar {
-    background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #0b1219, stop:1 #101a23);
-    border: 1px solid rgba(0,234,255,40);
-    border-radius: 12px;
-}
-QLabel#window_title {
-    color: #b7dffa;
-    font-weight: 700;
-    letter-spacing: 0.5px;
+    background: transparent;
+    border: none;
 }
 QPushButton#win_btn, QPushButton#win_btn_close {
     background: #0f1720;
@@ -569,23 +567,14 @@ QFrame#card {
     border-radius: 22px;
     border: 1px solid rgba(0,234,255,40);
 }
-QPushButton#config_btn {
-    background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #334155, stop:1 #3b485d);
-    color: #e6eef6;
-    border: 1px solid #475569;
-    border-radius: 10px;
-    padding: 8px 18px;
-    font-weight: 600;
-}
-QPushButton#config_btn:hover { border-color: #00eaff; color: #ffffff; }
-QPushButton#config_btn:pressed { background: #2a3444; }
 QPushButton#download_minimap_btn {
     background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #00eaff, stop:1 #4af3ff);
     color: #0b1014;
     border: 1px solid rgba(0,234,255,120);
-    border-radius: 12px;
-    padding: 10px 22px;
+    border-radius: 8px;
+    padding: 4px 14px;
     font-weight: 700;
+    font-size: 11px;
     letter-spacing: 0.5px;
 }
 QPushButton#download_minimap_btn:hover { border-color: #7ff7ff; }
@@ -593,7 +582,7 @@ QPushButton#download_minimap_btn:pressed { background: #00cfe6; }
 QPushButton#download_minimap_btn:disabled { background: #3a3f44; border-color: #3a3f44; color: #7f868c; }
 QPushButton#play_btn {
     background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #00eaff, stop:1 #09ffc9);
-    color: #061017;
+    color: #ffffff;
     border: 1px solid rgba(9,255,201,140);
     border-radius: 16px;
     padding: 14px 32px;
@@ -607,9 +596,10 @@ QComboBox#minimap_combo {
     background: #0f1722;
     color: #d7f9ff;
     border: 1px solid rgba(0,234,255,60);
-    padding: 6px 32px 6px 16px;
-    border-radius: 10px;
-    min-width: 190px;
+    padding: 4px 18px 4px 10px;
+    border-radius: 8px;
+    min-width: 130px;
+    font-size: 11px;
     text-align: center;
 }
 QComboBox#minimap_combo:hover { border-color: rgba(0,234,255,120); }
@@ -670,7 +660,7 @@ QTextEdit#log_text {
             logo_fallback = resource_path('images', 'logo-universal.png')
             logo_path = logo_primary if os.path.exists(logo_primary) else logo_fallback
             if os.path.exists(logo_path) and hasattr(self, 'logo_label'):
-                logo_pix = QPixmap(logo_path).scaled(240, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                logo_pix = QPixmap(logo_path).scaled(640, 360, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 self.logo_label.setPixmap(logo_pix)
         except Exception as e:
             print(f"Image load issue: {e}")
@@ -733,13 +723,13 @@ QTextEdit#log_text {
 
         # Central mapping so any label change only needs updating here
         minimap_mapping = {
-            "With Markers": "with-markers",
-            "Without Markers": "without-markers",
-            "With Grid & POI": "with-grid-overlay-and-poi-markers",
+            "Com marcadores": "with-markers",
+            "Sem marcadores": "without-markers",
+            "Com grade e pontos de interesse": "with-grid-overlay-and-poi-markers",
         }
 
         if selected not in minimap_mapping:
-            QMessageBox.warning(self, "Selection Required", "Please select a minimap type first!")
+            QMessageBox.warning(self, "Seleção necessária", "Selecione primeiro um tipo de minimap!")
             return
 
         minimap_type = minimap_mapping[selected]
@@ -757,18 +747,18 @@ QTextEdit#log_text {
     def on_minimap_download_complete(self, success):
         """Handle minimap download completion"""
         if success:
-            self.update_status("✅ Minimap installed!")
-            self.log_message("✅ Minimap installed successfully!")
-            QMessageBox.information(self, "Success", 
-                                  "Minimap has been installed successfully!")
+            self.update_status("✅ Minimap instalado!")
+            self.log_message("✅ Minimap instalado com sucesso!")
+            QMessageBox.information(self, "Sucesso", 
+                                  "Minimap instalado com sucesso!")
             
             # Reset dropdown
             self.minimap_combo.setCurrentIndex(0)
         else:
-            self.update_status("❌ Minimap download failed")
-            self.log_message("❌ Minimap download failed")
-            QMessageBox.critical(self, "Download Error", 
-                               "Failed to download minimap!")
+            self.update_status("❌ Falha no download do minimap")
+            self.log_message("❌ Falha no download do minimap")
+            QMessageBox.critical(self, "Erro no Download", 
+                               "Falha ao baixar o minimap!")
         
         self.update_progress(0)
     
@@ -777,17 +767,21 @@ QTextEdit#log_text {
         def check_updates():
             try:
                 if not silent:
-                    self.update_status("🔍 Checking for updates...")
-                    self.log_message("🔍 Checking for Tibia game updates...")
+                    self.update_status("🔍 Verificando atualizações...")
+                    self.log_message("🔍 Verificando atualizações do Tibia...")
 
                 current_version = self.launcher_core.get_current_version() or 'Not installed'
                 if not silent:
-                    self.log_message(f"📋 Current version: {current_version}")
+                    self.log_message(f"📋 Versão atual: {current_version}")
 
                 # Optional auto-install behavior from remote config
                 auto_install = False
                 try:
                     cfg = self.launcher_core.get_remote_config()
+                    if cfg:
+                        sname = cfg.get('server_name')
+                        if sname:
+                            self.server_name_signal.emit(str(sname))
                     val = (cfg or {}).get('auto_install_updates')
                     if isinstance(val, bool):
                         auto_install = val
@@ -804,7 +798,7 @@ QTextEdit#log_text {
                         latest_version = latest_version[1:]
 
                     if not silent:
-                        self.log_message(f"🌐 Latest version: {latest_version or 'Unknown'}")
+                        self.log_message(f"🌐 Versão mais recente: {latest_version or 'Unknown'}")
 
                     # Decide if update is needed
                     needs_update = False
@@ -819,35 +813,35 @@ QTextEdit#log_text {
 
                     if latest_version and needs_update:
                         # Update available - make it prominent
-                        self.update_status("🔄 Update available!")
-                        self.log_message("🎉 New Tibia update available for download!")
+                        self.update_status("🔄 Atualização disponível!")
+                        self.log_message("🎉 Nova atualização do Tibia disponível para download!")
 
                         # Automatically start download if not installed
                         if current_version == "Not installed":
-                            self.log_message("📦 Tibia is not installed. Starting automatic download...")
+                            self.log_message("📦 Tibia não está instalado. Iniciando download automático...")
                             self.download_and_install()
                         # If installed and auto_install is enabled, start automatically
                         elif auto_install:
-                            self.log_message("⚙️ Auto-install enabled via config. Starting update...")
+                            self.log_message("⚙️ Auto-instalação habilitada pela config. Iniciando atualização...")
                             self.download_and_install()
                         # Otherwise, prompt user as before
                         elif not silent:
                             self.update_available_signal.emit(current_version, latest_version)
 
                     elif latest_version:
-                        self.update_status("✅ Up to date")
+                        self.update_status("✅ Atualizado")
                         if not silent:
-                            self.log_message("✅ You have the latest Tibia version!")
+                            self.log_message("✅ Você está com a versão mais recente do Tibia!")
                     else:
-                        self.update_status("⚠️ Version check incomplete")
+                        self.update_status("⚠️ Verificação de versão incompleta")
                         if not silent:
-                            self.log_message("⚠️ Could not determine latest version, but release info was fetched.")
+                            self.log_message("⚠️ Não foi possível determinar a versão mais recente, mas os dados do release foram obtidos.")
                 else:
-                    self.update_status("❌ Update check failed")
+                    self.update_status("❌ Falha na verificação de atualizações")
                     if not silent:
-                        self.log_message("❌ Failed to check for updates (no release info)")
+                        self.log_message("❌ Falha ao verificar atualizações (sem dados do release)")
             except Exception as e:
-                self.update_status("⚠️ Update check error")
+                self.update_status("⚠️ Erro na verificação de atualizações")
                 if not silent:
                     self.log_message(f"⚠️ Error checking updates: {str(e)}")
         # Run in thread to avoid blocking UI
@@ -861,7 +855,7 @@ QTextEdit#log_text {
         self.update_check_timer.timeout.connect(lambda: self.check_for_updates(silent=True))
         self.update_check_timer.start(7200000)  # 2 hours
         
-        self.log_message("⏰ Automatic update checking enabled (every 2 hours)")
+        self.log_message("⏰ Verificação automática de atualizações ativada (a cada 2 horas)")
     
     def show_update_prompt(self, current_version, latest_version):
         """Show update prompt on main thread (connected to signal)"""
@@ -881,6 +875,14 @@ QTextEdit#log_text {
                 self.download_and_install()
         except Exception as e:
             self.log_message(f"⚠️ Error showing update notification: {e}")
+
+    def apply_server_name(self, name):
+        """Update window/title-bar branding with the remote server name."""
+        try:
+            if name:
+                self.setWindowTitle(f"{name} Launcher")
+        except Exception:
+            pass
     
     # ---------------- Launcher self-update ----------------
     def _parse_version(self, v: str):
@@ -894,7 +896,7 @@ QTextEdit#log_text {
         try:
             # Only applicable for packaged builds
             if not getattr(sys, 'frozen', False):
-                self.log_message("ℹ️ Skipping launcher self-update in dev mode (not a packaged EXE).")
+                self.log_message("ℹ️ Pulando auto-atualização do launcher em modo de desenvolvimento (não é EXE empacotado).")
                 return
 
             # Ask core to determine availability and download URL
@@ -947,13 +949,13 @@ QTextEdit#log_text {
         """Download the new EXE and replace the running EXE using a temporary batch."""
         try:
             if not getattr(sys, 'frozen', False):
-                self.log_message("ℹ️ Launcher self-update is only available in packaged EXE.")
+                self.log_message("ℹ️ Auto-atualização do launcher disponível apenas no EXE empacotado.")
                 return
 
             # Prepare UI
-            self.update_status("🔄 Preparing launcher update...")
+            self.update_status("🔄 Preparando atualização do launcher...")
             self.update_progress(0)
-            self.log_message("🔄 Starting launcher self-update...")
+            self.log_message("🔄 Iniciando auto-atualização do launcher...")
             self.play_btn.setEnabled(False)
 
             # Progress mapper for UI
@@ -962,35 +964,35 @@ QTextEdit#log_text {
                     # Clamp and update main progress bar
                     pct = max(0, min(int(percent), 100))
                     self.update_progress(pct)
-                    self.update_status(f"⬇️ Downloading launcher update... {pct}%")
+                    self.update_status(f"⬇️ Baixando atualização do launcher... {pct}%")
                 except Exception:
                     pass
 
             # Download new launcher
             temp_path = self.launcher_core.download_launcher_update(url, progress_callback=progress_cb)
             if not temp_path or not os.path.exists(temp_path):
-                raise Exception("Failed to download launcher update")
+                raise Exception("Falha ao baixar a atualização do launcher")
 
             # Apply update (spawns a batch to copy and restart)
             applied = self.launcher_core.apply_launcher_update(temp_path)
             if not applied:
-                raise Exception("Failed to apply launcher update")
+                raise Exception("Falha ao aplicar a atualização do launcher")
 
             # Inform user and exit so the batch can replace the file
-            self.update_status("🔁 Applying launcher update and restarting...")
-            self.log_message("🔁 Applying launcher update and restarting...")
+            self.update_status("🔁 Aplicando atualização do launcher e reiniciando...")
+            self.log_message("🔁 Aplicando atualização do launcher e reiniciando...")
 
             # Give the UI a brief moment then quit
             QTimer.singleShot(600, QApplication.instance().quit)
 
         except Exception as e:
-            self.log_message(f"❌ Launcher self-update failed: {e}")
+            self.log_message(f"❌ Falha na auto-atualização do launcher: {e}")
             self._restore_launcher_ui()
     
     def _simulate_launcher_progress(self):
         """Deprecated: kept for reference but no longer used (real download now)."""
         try:
-            self.update_status("ℹ️ Simulation disabled; performing real update when packaged.")
+            self.update_status("ℹ️ Simulação desabilitada; executando atualização real quando empacotado.")
         except Exception:
             pass
     
@@ -1006,7 +1008,7 @@ QTextEdit#log_text {
         """Download and install updates (called automatically by update system)"""
         
         # Update status and reset progress
-        self.update_status("🔄 Preparing download...")
+        self.update_status("🔄 Preparando download...")
         self.update_progress(0)
         
         # Start download thread - use main window progress, no separate dialog
@@ -1019,11 +1021,11 @@ QTextEdit#log_text {
     def on_download_complete(self, success):
         """Handle download completion"""
         if success:
-            self.update_status("✅ Installation completed!")
-            self.log_message("🎉 Installation completed successfully!")
+            self.update_status("✅ Instalação concluída!")
+            self.log_message("🎉 Instalação concluída com sucesso!")
         else:
-            self.update_status("❌ Installation failed")
-            self.log_message("❌ Installation failed")
+            self.update_status("❌ Falha na instalação")
+            self.log_message("❌ Falha na instalação")
         
         # Reset progress
         self.update_progress(0)
@@ -1031,176 +1033,19 @@ QTextEdit#log_text {
     def launch_tibia(self):
         """Launch the Tibia client"""
         try:
-            self.update_status("🚀 Launching Tibia...")
+            self.update_status("🚀 Iniciando Tibia...")
             self.launcher_core.launch_tibia()
-            self.update_status("✅ Tibia launched successfully!")
-            self.log_message("🚀 Tibia client launched!")
+            self.update_status("✅ Tibia iniciado com sucesso!")
+            self.log_message("🚀 Cliente Tibia iniciado!")
+        except ClientAlreadyRunningError as e:
+            self.update_status("⚠️ Cliente já está aberto")
+            self.log_message(f"⚠️ {e}")
         except Exception as e:
-            QMessageBox.critical(self, "Launch Error", 
-                               f"Failed to launch Tibia: {str(e)}")
-            self.update_status(f"❌ Launch failed: {str(e)}")
-            self.log_message(f"❌ Failed to launch: {str(e)}")
+            QMessageBox.critical(self, "Erro ao iniciar",
+                               f"Falha ao iniciar o Tibia: {str(e)}")
+            self.update_status(f"❌ Falha ao iniciar: {str(e)}")
+            self.log_message(f"❌ Falha ao iniciar: {str(e)}")
     
-    def open_config_dialog(self):
-        """Open configuration dialog"""
-        dialog = QDialog(self)
-        dialog.setWindowTitle("⚙️ Launcher Configuration")
-        dialog.setModal(True)
-        dialog.resize(500, 300)
-        
-        layout = QVBoxLayout(dialog)
-        
-        # Installation Directory
-        dir_group = QGroupBox("Installation Directory")
-        dir_layout = QVBoxLayout(dir_group)
-        
-        current_dir_label = QLabel(f"Current: {self.launcher_core.tibia_dir}")
-        current_dir_label.setWordWrap(True)
-        dir_layout.addWidget(current_dir_label)
-        # Quick access to installation folder
-        open_btn = QPushButton("📂 Open Installation Folder")
-        def open_folder():
-            path = self.launcher_core.tibia_dir
-            try:
-                os.makedirs(path, exist_ok=True)
-                from PySide6.QtGui import QDesktopServices
-                from PySide6.QtCore import QUrl
-                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to open folder: {e}")
-        open_btn.clicked.connect(open_folder)
-        dir_layout.addWidget(open_btn)
-
-        fixed_info = QLabel("Installation location is fixed to %APPDATA%/Tibia.")
-        fixed_info.setWordWrap(True)
-        dir_layout.addWidget(fixed_info)
-        
-        layout.addWidget(dir_group)
-        
-        # Protected Folders
-        protected_group = QGroupBox("Protected Folders")
-        protected_layout = QVBoxLayout(protected_group)
-        
-        protected_info = QLabel(
-            "These folders are preserved during updates:\n"
-            "• minimap\n• conf\n• characterdata"
-        )
-        protected_layout.addWidget(protected_info)
-        
-        layout.addWidget(protected_group)
-        
-        # --- Tibia Update section ---
-        update_group = QGroupBox("Tibia Update")
-        update_layout = QVBoxLayout(update_group)
-        update_info = QLabel("Check for the latest Tibia client and install updates.")
-        update_info.setWordWrap(True)
-        update_layout.addWidget(update_info)
-
-        check_update_btn = QPushButton("🔄 Check for Tibia Update")
-        def do_manual_update():
-            try:
-                status = self.launcher_core.check_tibia_version_status()
-                cur = status.get('current_version', 'Unknown')
-                latest = status.get('latest_version', 'Unknown')
-                if status.get('update_available'):
-                    reply = QMessageBox.question(
-                        dialog,
-                        "Update Available",
-                        f"A new update is available.\n\nCurrent: {cur}\nLatest: {latest}\n\nDownload and install now?",
-                        QMessageBox.Yes | QMessageBox.No,
-                        QMessageBox.Yes
-                    )
-                    if reply == QMessageBox.Yes:
-                        dialog.accept()
-                        self.download_and_install()
-                else:
-                    QMessageBox.information(dialog, "Up to date", f"No updates available.\nCurrent: {cur}\nLatest: {latest}")
-            except Exception as e:
-                QMessageBox.critical(dialog, "Error", f"Failed to check updates: {e}")
-        check_update_btn.clicked.connect(do_manual_update)
-        update_layout.addWidget(check_update_btn)
-
-        # Safety: Force Download + Install (helps if detection breaks)
-        force_btn = QPushButton("🛠 Safety: Download + Install")
-        def do_force_install():
-            reply = QMessageBox.question(
-                dialog,
-                "Force Install",
-                "This will download the latest client and reinstall it.\n\n"
-                "Your protected folders (minimap, conf, characterdata) will be preserved.\n\n"
-                "Proceed?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes
-            )
-            if reply == QMessageBox.Yes:
-                dialog.accept()
-                # Kick off download/install regardless of current status
-                try:
-                    self.log_message("🛠 Starting safety download + install...")
-                except Exception:
-                    pass
-                self.download_and_install()
-        force_btn.clicked.connect(do_force_install)
-        update_layout.addWidget(force_btn)
-        layout.addWidget(update_group)
-
-        # --- Launcher Update section ---
-        launcher_group = QGroupBox("Launcher Update")
-        launcher_layout = QVBoxLayout(launcher_group)
-        launcher_info = QLabel("Manually check for a new launcher version and install it.\n"
-                               "Note: Available only when running the packaged EXE.")
-        launcher_info.setWordWrap(True)
-        launcher_layout.addWidget(launcher_info)
-
-        check_launcher_btn = QPushButton("🧰 Check for Launcher Update")
-        def do_manual_launcher_update():
-            try:
-                if not getattr(sys, 'frozen', False):
-                    QMessageBox.information(dialog, "Not Packaged",
-                                            "Launcher self-update is only available in the packaged EXE.")
-                    return
-                status = self.launcher_core.check_launcher_update()
-                if not status or not isinstance(status, dict):
-                    QMessageBox.warning(dialog, "Update Check",
-                                        "Could not determine launcher update status.")
-                    return
-                if not status.get('available'):
-                    QMessageBox.information(dialog, "Up to date",
-                                            "No new launcher version available.")
-                    return
-                latest = status.get('latest_version', 'unknown')
-                url = status.get('download_url')
-                if not url:
-                    QMessageBox.warning(dialog, "Update Check",
-                                        "No download URL provided by release.")
-                    return
-                # Prompt to proceed
-                reply = QMessageBox.question(
-                    dialog,
-                    "Update Launcher",
-                    f"A new launcher version {latest} is available.\nInstall now?",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.Yes
-                )
-                if reply == QMessageBox.Yes:
-                    dialog.accept()
-                    self.download_and_apply_launcher_update(url)
-            except Exception as e:
-                QMessageBox.critical(dialog, "Error", f"Failed to check/apply launcher update: {e}")
-        check_launcher_btn.clicked.connect(do_manual_launcher_update)
-        launcher_layout.addWidget(check_launcher_btn)
-        layout.addWidget(launcher_group)
-        
-        # Close button
-        close_btn = QPushButton("✅ Close")
-        close_btn.clicked.connect(dialog.accept)
-        layout.addWidget(close_btn)
-        
-        # Apply dark styling to dialog
-        dialog.setStyleSheet(self.styleSheet())
-        
-        dialog.exec()
-
     # Removed first-run prompt and manual browse: location is fixed to %APPDATA%
 
 
@@ -1210,7 +1055,7 @@ def main():
     app.setStyle('Fusion')  # Use Fusion style for better dark theme support
     
     # Set application icon if available
-    icon_path = resource_path('images', 'logo-universal.png')
+    icon_path = resource_path('images', 'appicon.ico')
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
     

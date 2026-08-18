@@ -49,7 +49,7 @@ echo 1. Edit github_downloader.py - Update repo_owner and repo_name
 echo 2. Replace images in images/ folder with your branding
 echo 3. Create your launcher_config.json file in your GitHub repo
 echo 4. Test: python pyside6_gaming_launcher.py
-echo 5. Build: pyinstaller tibialauncher.spec --noconfirm
+echo 5. Build: pyinstaller tibialauncher_onefile.spec --noconfirm
 echo.
 echo The built EXE will be in: dist\tibialauncher.exe
 echo.

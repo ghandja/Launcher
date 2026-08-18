@@ -13,6 +13,10 @@ env/
 # Build artifacts
 build/
 dist/
+*.exe
+*.exe.*
+*.pdb
+*.dll
 
 # PyInstaller
 *.manifest

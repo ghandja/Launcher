@@ -15,7 +15,7 @@ from datetime import datetime
 
 class FileManager:
     def __init__(self):
-        self.protected_folders = ['minimap', 'conf', 'character data']
+        self.protected_folders = ['minimap', 'conf', 'characterdata', 'screenshots']
         self.protected_files = [
             'launcher_config.json',
             'version.txt'

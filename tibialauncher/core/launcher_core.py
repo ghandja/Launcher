@@ -17,6 +17,10 @@ from .github_downloader import GitHubDownloader
 from .file_manager import FileManager
 
 
+class ClientAlreadyRunningError(Exception):
+	"""Raised when the Tibia client is already running."""
+
+
 class LauncherCore:
 	def __init__(self, tibia_dir: str | None = None):
 		"""LauncherCore initializer.
@@ -32,7 +36,7 @@ class LauncherCore:
 		self.file_manager = FileManager()
         
 		# Default protected folders that should not be overwritten
-		self.default_protected_folders = ['minimap', 'conf', 'characterdata']
+		self.default_protected_folders = ['minimap', 'conf', 'characterdata', 'screenshots']
 		self.protected_folders = self.default_protected_folders.copy()
         
 		# Folder structure
@@ -349,14 +353,14 @@ class LauncherCore:
 				'latest_version': None,
 				'update_available': False,
 				'first_install': False,
-				'status_message': 'Unknown status',
+				'status_message': 'Status desconhecido',
 				'description': '',
 				'success': False
 			}
             
 			if not latest_info:
-				status['status_message'] = '❌ Unable to check for updates'
-				status['description'] = 'Failed to fetch latest release information'
+				status['status_message'] = '❌ Não foi possível verificar atualizações'
+				status['description'] = 'Falha ao obter informações do release mais recente'
 				return status
             
 			latest_version = latest_info.get('version') or latest_info.get('tag_name') or 'Unknown'
@@ -369,17 +373,17 @@ class LauncherCore:
 			if not current_version or current_version == "Not installed":
 				status['first_install'] = True
 				status['update_available'] = True
-				status['status_message'] = '📦 Ready to install'
+				status['status_message'] = '📦 Pronto para instalar'
 			else:
 				comparison = self._compare_versions(current_version, latest_version)
 				if comparison < 0:
 					status['update_available'] = True
-					status['status_message'] = '🔄 Update available'
+					status['status_message'] = '🔄 Atualização disponível'
 				elif comparison == 0:
-					status['status_message'] = '✅ Up to date'
+					status['status_message'] = '✅ Atualizado'
 				else:
 					# Current version is newer than latest (development version?)
-					status['status_message'] = '🚀 Development version'
+					status['status_message'] = '🚀 Versão de desenvolvimento'
             
 			return status
             
@@ -389,8 +393,8 @@ class LauncherCore:
 				'latest_version': 'Unknown', 
 				'update_available': False,
 				'first_install': False,
-				'status_message': f'⚠️ Check failed: {str(e)}',
-				'description': 'Error occurred while checking version',
+				'status_message': f'⚠️ Falha na verificação: {str(e)}',
+				'description': 'Ocorreu um erro ao verificar a versão',
 				'success': False
 			}
 
@@ -447,7 +451,19 @@ class LauncherCore:
                 
 				if not success:
 					raise Exception("Failed to download the update")
-                
+             
+				# Verify SHA256 checksum if provided in config
+				expected_sha256 = config.get('sha256')
+				if expected_sha256:
+					import hashlib
+					sha256 = hashlib.sha256()
+					with open(zip_path, 'rb') as f:
+						for chunk in iter(lambda: f.read(8192), b''):
+							sha256.update(chunk)
+					actual_sha256 = sha256.hexdigest()
+					if actual_sha256.lower() != expected_sha256.lower():
+						raise Exception(f"SHA256 mismatch: expected {expected_sha256}, got {actual_sha256}")
+             
 				if progress_callback:
 					progress_callback(40, 100)
                 
@@ -678,23 +694,117 @@ class LauncherCore:
 			# Extract all files
 			zip_ref.extractall(target_path)
     
+    # ------------------------------------------------------------------
+	# ------------------------------------------------------------------
+	# Server connection helpers (CrystalOTC / OTC-style clients)
+	# ------------------------------------------------------------------
+	def get_server_connection(self):
+		"""Return server connection settings from the remote config.
+
+		Defaults are safe for a local Crystal Server setup (HTTP login on
+		port 8080, game protocol 1525).
+		"""
+		config = self.get_remote_config() or {}
+		try:
+			login_port = int(config.get('server_login_port', 8080))
+		except (TypeError, ValueError):
+			login_port = 8080
+		try:
+			protocol = int(config.get('server_protocol', 1525))
+		except (TypeError, ValueError):
+			protocol = 1525
+
+		server = {
+			'server_name': str(config.get('server_name', 'Chapadonia')),
+			'host': str(config.get('server_host', '127.0.0.1')),
+			'login_port': login_port,
+			'protocol': protocol,
+			'http_login': config.get('server_http_login', True),
+			'login_path': str(config.get('server_login_path', 'login.php')),
+			'authenticator': bool(config.get('server_use_authenticator', False)),
+		}
+		return server
+
+	def write_client_rc(self):
+		"""Write crystalotcrc.lua into the client folder.
+
+		OTC clients load /<compactname>rc.lua from the workdir at startup
+		(see init.lua of CrystalOTC). This lets the launcher point the client
+		at the configured server without rebuilding the client zip.
+		Returns the written path or None on failure.
+		"""
+		target_path = self.get_target_folder_path()
+		if not os.path.isdir(target_path):
+			return None
+
+		srv = self.get_server_connection()
+		host = srv['host'].strip()
+		login_path = srv['login_path'].strip().lstrip('/')
+		full_host = f"{host}/{login_path}" if login_path else host
+
+		script = (
+			"-- Generated by Chapadonia Launcher - do not edit\n"
+			"Servers_init = {\n"
+			f"    [\"{srv['server_name']}\"] = {{\n"
+			f"        host = \"{full_host}\",\n"
+			f"        port = {srv['login_port']},\n"
+			f"        protocol = {srv['protocol']},\n"
+			f"        httpLogin = {str(srv['http_login']).lower()},\n"
+			f"        useAuthenticator = {str(srv['authenticator']).lower()}\n"
+			"    }\n"
+			"}\n"
+		)
+		rc_path = os.path.join(target_path, 'crystalotcrc.lua')
+		try:
+			with open(rc_path, 'w', encoding='utf-8') as f:
+				f.write(script)
+			return rc_path
+		except Exception as e:
+			print(f"Warning: could not write client rc file: {e}")
+			return None
+
+	def _is_client_running(self) -> bool:
+		"""Check if a Tibia client process is already running (Windows)."""
+		if sys.platform != 'win32':
+			return False
+		exe_names = ['client.exe', 'CrystalOTC_gl_x64.exe', 'Tibia.exe', 'tibia.exe', 'TibiaClient.exe']
+		try:
+			result = subprocess.run(
+				['tasklist', '/FO', 'CSV', '/NH'],
+				capture_output=True, text=True, timeout=5,
+				creationflags=subprocess.CREATE_NO_WINDOW
+			)
+			output = result.stdout.lower()
+			for name in exe_names:
+				if '"' + name.lower() + '"' in output:
+					return True
+		except Exception:
+			pass
+		return False
+
 	def launch_tibia(self):
 		"""Launch the Tibia client"""
+		if self._is_client_running():
+			raise ClientAlreadyRunningError("O cliente Tibia já está aberto.")
+
+		# Refresh the server connection file before launching the client
+		self.write_client_rc()
+
 		# Priority 1: Look for client.exe in Tibia/bin/ folder
 		target_path = self.get_target_folder_path()
 		client_exe = os.path.join(target_path, 'bin', 'client.exe')
 		if os.path.exists(client_exe):
 			subprocess.Popen([client_exe], cwd=os.path.join(target_path, 'bin'))
 			return
-        
+
 		# Priority 2: Look for common exe names in Tibia root
-		exe_names = ['client.exe', 'Tibia.exe', 'tibia.exe', 'TibiaClient.exe']
+		exe_names = ['client.exe', 'CrystalOTC_gl_x64.exe', 'Tibia.exe', 'tibia.exe', 'TibiaClient.exe']
 		for exe_name in exe_names:
 			exe_path = os.path.join(target_path, exe_name)
 			if os.path.exists(exe_path):
 				subprocess.Popen([exe_path], cwd=target_path)
 				return
-        
+
 		# Priority 3: Look in any bin folder in Tibia
 		bin_folder = os.path.join(target_path, 'bin')
 		if os.path.exists(bin_folder):
@@ -703,17 +813,16 @@ class LauncherCore:
 				if os.path.exists(exe_path):
 					subprocess.Popen([exe_path], cwd=bin_folder)
 					return
-        
+
 		# Fallback: Look in main directory
 		for exe_name in exe_names:
 			exe_path = os.path.join(self.tibia_dir, exe_name)
 			if os.path.exists(exe_path):
 				subprocess.Popen([exe_path], cwd=self.tibia_dir)
 				return
-        
+
 		raise Exception("Could not find client executable. Expected: Tibia/bin/client.exe")
 
-	# ------------------------------------------------------------------
 	# Miscellaneous info helpers
 	# ------------------------------------------------------------------
 	def get_players_online(self, force_scrape: bool | None = None):
@@ -915,8 +1024,20 @@ class LauncherCore:
 						if progress_callback and total_size > 0:
 							progress = (downloaded / total_size) * 100
 							progress_callback(progress)
-                
-				return temp_file.name
+            
+			# Verify SHA256 if provided in release
+			expected_sha256 = release_data.get('sha256') if 'release_data' in dir() else None
+			if expected_sha256:
+				import hashlib
+				sha256 = hashlib.sha256()
+				with open(temp_file.name, 'rb') as f:
+					for chunk in iter(lambda: f.read(8192), b''):
+						sha256.update(chunk)
+				if sha256.hexdigest().lower() != expected_sha256.lower():
+					os.unlink(temp_file.name)
+					raise Exception("Launcher update SHA256 verification failed")
+            
+			return temp_file.name
                 
 		except Exception as e:
 			print(f"Error downloading launcher update: {e}")
@@ -963,7 +1084,7 @@ del "%~f0"
 				f.write(batch_content)
             
 			# Execute the batch file and exit current launcher
-			subprocess.Popen([batch_file], shell=True)
+			subprocess.Popen([batch_file])
 			return True
             
 		except Exception as e:

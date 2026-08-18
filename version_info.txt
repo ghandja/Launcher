@@ -1,7 +1,7 @@
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 1, 0, 0),
-    prodvers=(1, 1, 0, 0),
+    filevers=(2, 0, 0, 0),
+    prodvers=(2, 0, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -14,14 +14,14 @@ VSVersionInfo(
       StringTable(
         u'040904b0',
         [
-          StringStruct(u'CompanyName', u'TibiaLauncher'),
-          StringStruct(u'FileDescription', u'Tibia Launcher'),
-          StringStruct(u'FileVersion', u'1.1.0.0'),
+          StringStruct(u'CompanyName', u'Chapadonia'),
+          StringStruct(u'FileDescription', u'Chapadonia Launcher'),
+          StringStruct(u'FileVersion', u'2.0.0.0'),
           StringStruct(u'InternalName', u'tibialauncher'),
           StringStruct(u'OriginalFilename', u'tibialauncher.exe'),
-          StringStruct(u'ProductName', u'Tibia Launcher'),
-          StringStruct(u'ProductVersion', u'1.1.0.0'),
-          StringStruct(u'LegalCopyright', u'Copyright (C) 2025 TibiaLauncher')
+          StringStruct(u'ProductName', u'Chapadonia Launcher'),
+          StringStruct(u'ProductVersion', u'2.0.0.0'),
+          StringStruct(u'LegalCopyright', u'Copyright (C) 2026 Chapadonia')
         ]
       )
     ]),
